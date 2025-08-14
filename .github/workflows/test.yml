@@ -1,0 +1,53 @@
+# This workflow is designed to test connections and permissions for
+# Azure Container Registry (ACR) and Azure Key Vault.
+# It should be run manually to diagnose CI/CD setup issues.
+
+name: Test Azure Connections
+
+on:
+  workflow_dispatch: # Allows this workflow to be triggered manually from the Actions tab
+
+# --- Environment Variables ---
+# These variables use the same secrets as your main deployment workflow.
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}
+  TEST_SECRET_NAME: "Test-Secret" # The name of the test secret you should create in your Key Vault.
+
+jobs:
+  test-connections:
+    name: Test Azure Connections
+    runs-on: ubuntu-latest
+    environment: development
+
+    steps:
+      # 1. Log in to Azure using the Service Principal credentials
+      # This step tests if your AZURE_CREDENTIALS secret is correct.
+      - name: 1. Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 2. Test Azure Container Registry (ACR) Login
+      # This step verifies that the ACR_NAME is correct and that your
+      # Service Principal has permission to access it.
+      - name: 2. Test ACR Login
+        run: |
+          echo "Attempting to log in to ACR: ${{ env.ACR_NAME }}..."
+          az acr login --name ${{ env.ACR_NAME }}
+          echo "✅ Successfully logged in to ACR."
+        
+      # 3. Test Key Vault Secret Access
+      # This step verifies that the KEY_VAULT_NAME is correct and that
+      # your Service Principal has 'get' and 'list' permissions on its secrets.
+      - name: 3. Test Key Vault Access
+        run: |
+          echo "Attempting to fetch secret '${{ env.TEST_SECRET_NAME }}' from Key Vault: ${{ env.KEY_VAULT_NAME }}..."
+          SECRET_VALUE=$(az keyvault secret show --vault-name "${{ env.KEY_VAULT_NAME }}" --name "${{ env.TEST_SECRET_NAME }}" --query value -o tsv)
+          
+          if [ -n "$SECRET_VALUE" ]; then
+            echo "✅ Successfully fetched secret from Key Vault."
+          else
+            echo "❌ Failed to fetch secret. Check secret name and permissions."
+            exit 1
+          fi
