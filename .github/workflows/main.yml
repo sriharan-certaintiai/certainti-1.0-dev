@@ -1,20 +1,132 @@
+# A modern CI/CD workflow that builds a Docker image, pushes it to Azure Container Registry,
+# fetches secrets from Azure Key Vault, and deploys to a VM.
 
-# File: .github/workflows/main.yml
+name: Build, Push, and Deploy to Development
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/**'
+  workflow_dispatch: # Allows manual triggering
 
-name: AzureLoginSample
+# --- Environment Variables ---
+# Define variables accessible across the job.
+# Use GitHub Secrets to store sensitive values.
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}   # e.g., yourregistry.azurecr.io
+  ACR_NAME: ${{ secrets.ACR_NAME }}                   # e.g., yourregistry
+  KEY_VAULT_NAME: ${{ secrets.KEY_VAULT_NAME }}       # The name of your Azure Key Vault
+  IMAGE_NAME: be                                      # The name for your Docker image
+  SERVICE_NAME: BE                                    # The service name in your docker-compose.yml
+  VM_USER: root                                       # The SSH user for your VM
+  VM_HOST: ${{ secrets.VM_HOST }}                     # The hostname or IP of your VM
+  VM_APP_PATH: /app/certainti.ai-product-be           # The absolute path to your app on the VM
+  COMPOSE_FILE_PATH: /app/docker-compose.yml          # The absolute path to your compose file on the VM
 
 jobs:
-
   build-and-deploy:
+    name: Build, Push, and Deploy
     runs-on: ubuntu-latest
+    environment: development
+
     steps:
-    
-    - uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-    
-    - run: |
-        az webapp list --query "[?state=='Running']"
+      # 1. Checkout the repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Set a unique image tag based on the Git commit hash
+      - name: Set Image Tag
+        id: image_tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # 3. Log in to Azure using credentials stored in GitHub Secrets
+      # This allows subsequent steps to use Azure CLI commands.
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 4. Log in to the specific Azure Container Registry
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      # 5. Build the Docker image and push it to ACR
+      # This action uses the credentials from the previous steps.
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile # Ensure this path points to your Dockerfile
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}
+
+      # 6. Fetch secrets from Key Vault and create a local .env file
+      # This is a secure way to manage configuration. The .env file is created on the runner.
+      - name: Create .env File from Azure Key Vault
+        run: |
+          echo "Fetching secrets from Azure Key Vault: ${{ env.KEY_VAULT_NAME }}"
+          # For each variable, fetch the corresponding secret from Key Vault.
+          # Replace 'SECRET-NAME-IN-VAULT' with the actual name of the secret.
+          echo "PORT=$(az keyvault secret show --vault-name "${{ env.KEY_VAULT_NAME }}" --name "ALL-PORT" --query value -o tsv)" >> .env
+          echo "CORS_ORIGIN=$(az keyvault secret show --vault-name "${{ env.KEY_VAULT_NAME }}" --name "ALL-CORS-ORIGIN" --query value -o tsv)" >> .env
+          echo "ACCESS_TOKEN_SECRET=$(az keyvault secret show --vault-name "${{ env.KEY_VAULT_NAME }}" --name "ALL-ACCESS-TOKEN-SECRET" --query value -o tsv)" >> .env
+          # --- ADD ALL OTHER SECRET FETCH COMMANDS HERE ---
+          echo "KEY_PATH=$(az keyvault secret show --vault-name "${{ env.KEY_VAULT_NAME }}" --name "DEV-KEY-PATH" --query value -o tsv)" >> .env
+          
+          echo ".env file created successfully."
+          echo "--- .env content ---"
+          cat .env # Print content for debugging purposes
+          echo "--------------------"
+
+      # 7. Set up SSH and securely copy the .env file to the VM
+      - name: Setup SSH and Copy .env File to VM
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
+          
+          echo "Copying .env file to VM's /tmp directory..."
+          scp -o StrictHostKeyChecking=no .env ${{ env.VM_USER }}@${{ env.VM_HOST }}:/tmp/.env
+
+      # 8. SSH into the VM to pull the new image and redeploy the service
+      - name: Deploy to VM
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            # Use sudo for privileged commands
+            sudo -s
+            
+            echo "--- Starting Deployment on VM ---"
+            
+            # Move the .env file from /tmp to the application directory
+            echo "Moving .env file to ${{ env.VM_APP_PATH }}/.env"
+            mv /tmp/.env ${{ env.VM_APP_PATH }}/.env
+            
+            # Define variables for the deployment
+            FULL_IMAGE_NAME="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}"
+            COMPOSE_FILE="${{ env.COMPOSE_FILE_PATH }}"
+            SERVICE_NAME="${{ env.SERVICE_NAME }}"
+            
+            # Update the docker-compose file to use the new image from ACR
+            # This sed command finds the image line for the specific service and updates it.
+            echo "Updating docker-compose file: ${COMPOSE_FILE}"
+            sed -i "/^\s*${SERVICE_NAME}:/,/image:/s|image: .*|image: ${FULL_IMAGE_NAME}|" ${COMPOSE_FILE}
+            
+            # Log in to ACR from the VM to pull the image
+            # Note: The VM needs Azure CLI installed for this to work.
+            echo "Logging into ACR from VM..."
+            az acr login --name ${{ env.ACR_NAME }}
+            
+            # Pull the new image and restart the service without affecting other services
+            echo "Pulling new image and redeploying service: ${SERVICE_NAME}"
+            docker-compose -f ${COMPOSE_FILE} up -d --no-deps ${SERVICE_NAME}
+            
+            # Clean up old, unused Docker images to save space
+            echo "Cleaning up old Docker images..."
+            docker image prune -af
+            
+            echo "--- Deployment on VM Complete ---"
+            exit
+          EOF
