@@ -6,7 +6,7 @@ name: Build and Push to ACR
 on:
   push:
     branches:
-      - dev # Triggers when code is pushed to the 'dev' branch
+      - main # Triggers when code is pushed to the 'dev' branch
     paths-ignore:
       - '.github/**'
   workflow_dispatch: # Allows manual triggering
