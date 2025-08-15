@@ -1,0 +1,61 @@
+# This workflow builds a Docker image from the repository's Dockerfile,
+# tags it, and pushes it to Azure Container Registry (ACR).
+
+name: Build and Push to ACR
+
+on:
+  push:
+    branches:
+      - dev # Triggers when code is pushed to the 'dev' branch
+    paths-ignore:
+      - '.github/**'
+  workflow_dispatch: # Allows manual triggering
+
+# --- Environment Variables ---
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  IMAGE_NAME: be # The name for your Docker image
+
+jobs:
+  build-and-push:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    environment: development
+
+    steps:
+      # 1. Checkout the repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Set a unique image tag based on the Git commit hash
+      # This provides excellent traceability from image back to code.
+      - name: Set Image Tag
+        id: image_tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # 3. Log in to Azure using the Service Principal credentials
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 4. Log in to the specific Azure Container Registry
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      # 5. Build the Docker image and push it to ACR
+      # This is the core step that builds your application and stores the artifact.
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile # Make sure this path is correct
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}
+
+      # 6. Confirmation Step
+      - name: Print Image Details
+        run: |
+          echo "✅ Successfully pushed image to ACR."
+          echo "Image Name: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}"
