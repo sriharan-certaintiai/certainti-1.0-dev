@@ -145,6 +145,10 @@ jobs:
             # Use sudo for privileged commands
             sudo -s
             
+            # --- ADVANCED SCRIPTING ---
+            # This command ensures that the script will exit immediately if any command fails.
+            set -e
+            
             echo "--- Starting Deployment on VM ---"
             
             # Move the .env file from /tmp to the application directory
@@ -164,9 +168,14 @@ jobs:
             echo "Logging into ACR from VM..."
             az acr login --name ${{ env.ACR_NAME }}
             
-            # Pull the new image and restart the service
-            echo "Pulling new image and redeploying service: ${SERVICE_NAME}"
-            docker-compose -f ${COMPOSE_FILE} up -d --no-deps ${SERVICE_NAME}
+            # ** IMPROVED DEPLOYMENT STEPS **
+            # 1. Explicitly pull the new image from ACR first
+            echo "Pulling new image: ${FULL_IMAGE_NAME}"
+            docker-compose -f ${COMPOSE_FILE} pull ${SERVICE_NAME}
+
+            # 2. Restart the service using the now-local image
+            echo "Redeploying service: ${SERVICE_NAME}"
+            docker-compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate ${SERVICE_NAME}
             
             # Clean up old, unused Docker images
             echo "Cleaning up old Docker images..."
