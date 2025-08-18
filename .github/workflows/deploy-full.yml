@@ -7,7 +7,7 @@ name: Build and Deploy to Development VM
 on:
   push:
     branches:
-      - main # Triggers when code is pushed to the 'dev' branch
+      - dev # Triggers when code is pushed to the 'dev' branch
     paths-ignore:
       - '.github/**'
   workflow_dispatch: # Allows manual triggering
@@ -168,14 +168,22 @@ jobs:
             echo "Logging into ACR from VM..."
             az acr login --name ${{ env.ACR_NAME }}
             
-            # ** IMPROVED DEPLOYMENT STEPS **
+            # ** MORE ROBUST DEPLOYMENT STEPS **
             # 1. Explicitly pull the new image from ACR first
             echo "Pulling new image: ${FULL_IMAGE_NAME}"
             docker-compose -f ${COMPOSE_FILE} pull ${SERVICE_NAME}
 
-            # 2. Restart the service using the now-local image
-            echo "Redeploying service: ${SERVICE_NAME}"
-            docker-compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate ${SERVICE_NAME}
+            # 2. Stop the currently running service (if it exists)
+            echo "Stopping current service..."
+            docker-compose -f ${COMPOSE_FILE} stop ${SERVICE_NAME}
+
+            # 3. Remove the stopped container
+            echo "Removing old container..."
+            docker-compose -f ${COMPOSE_FILE} rm -f ${SERVICE_NAME}
+
+            # 4. Start a new container from the newly pulled image
+            echo "Starting new container for service: ${SERVICE_NAME}"
+            docker-compose -f ${COMPOSE_FILE} up -d --no-deps ${SERVICE_NAME}
             
             # Clean up old, unused Docker images
             echo "Cleaning up old Docker images..."
