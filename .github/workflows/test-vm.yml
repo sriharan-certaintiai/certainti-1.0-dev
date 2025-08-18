@@ -1,0 +1,57 @@
+# This workflow is designed for a single purpose: to test SSH key-based
+# authentication to a remote VM and confirm that commands can be executed.
+
+name: Test VM Access and Write Operation
+
+on:
+  workflow_dispatch: # Allows this workflow to be triggered manually from the Actions tab
+
+# --- Environment Variables ---
+# Use secrets to keep your host and user information secure.
+env:
+  VM_HOST: ${{ secrets.DEVELOPMENT_BACKEND_VM_HOST }}
+  VM_USER: root # Or your specific SSH user for the VM
+
+jobs:
+  test-ssh-login-and-write:
+    name: Test SSH Login and Write
+    runs-on: ubuntu-latest
+
+    steps:
+      # This is the core step that performs the test.
+      - name: SSH and Perform Write Operation
+        run: |
+          echo "--- 1. Setting up SSH Key on the Runner ---"
+          # Create the .ssh directory
+          mkdir -p ~/.ssh
+          
+          # Write the private key from GitHub Secrets to a file on the runner
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          
+          # Set the correct, secure permissions for the key file
+          chmod 600 ~/.ssh/id_rsa
+          
+          # Automatically add the VM's host key to known_hosts to avoid interactive prompts
+          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
+          echo "SSH Key setup complete."
+          
+          echo "" # Add a blank line for readability
+          
+          echo "--- 2. Connecting to VM and Performing Test ---"
+          # Connect to the VM and execute a series of commands using a "here document"
+          ssh -o StrictHostKeyChecking=no ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            # Define the path for our temporary test file
+            TEST_FILE="/tmp/github_actions_test.txt"
+            
+            # Write a message with the current timestamp to the test file
+            echo "✅ Login successful. GitHub Actions was here at $(date)" > ${TEST_FILE}
+            
+            # Read the content of the file back to confirm the write operation was successful
+            echo "--- Verifying write operation by reading the file: ---"
+            cat ${TEST_FILE}
+            echo "----------------------------------------------------"
+            
+            # Clean up by removing the temporary file
+            rm ${TEST_FILE}
+            echo "✅ Cleanup complete. Test file removed."
+          EOF
